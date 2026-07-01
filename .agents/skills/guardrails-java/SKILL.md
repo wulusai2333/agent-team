@@ -705,9 +705,9 @@ step: "死信" AND @timestamp: [now-24h TO now]
 # 全局工作流全景
 
 ```
-/plan-java         → 需求盘问 + 版本大闸 → ADR + PRD + Issue
-/tdd-java          → 红→绿→微重构→提交
-guardrails-java    → 安装护栏（一次性）
+/plan-java          → 需求盘问 + 版本大闸 → ADR + PRD + Issue
+/tdd-java           → 红→绿→微重构→提交
+/guardrails-java    → 安装护栏（一次性）
                         ↓
                   每次 git commit：
                     pre-commit 熔断（秒级）：javax.* 污染？缺文档？编译语法错误？ → 拒绝

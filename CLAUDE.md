@@ -16,9 +16,9 @@
 |---|---|---|
 | `git --version` | 全部 | 版本管理、Hook 安装 |
 | `java -version` | `/plan-java`、`/tdd-java` | 编译与运行 |
-| `mvn -v` 或 `./gradlew -v` | `/tdd-java`、`guardrails` | 构建与测试 |
+| `mvn -v` 或 `./gradlew -v` | `/tdd-java`、`/guardrails-java` | 构建与测试 |
 | `gh --version` | `/plan-java` | Issue 发布 |
-| `docker --version` | `/tdd-java`（Testcontainers）、`guardrails` | 中间件容器 |
+| `docker --version` | `/tdd-java`（Testcontainers）、`/guardrails-java` | 中间件容器 |
 
 ### 环境缺失退化策略
 
