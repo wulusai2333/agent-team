@@ -1,6 +1,91 @@
 # plan-java 参考模板与检查表
 
-此文件是 `/plan-java` 的模板仓库。Agent 在执行到具体步骤时按需读取，不在技能启动时全部加载。
+此文件是 `/plan-java` 的模板仓库。Agent 在执行到具体步骤时按需读取。
+
+---
+
+# 步骤 0：需求清晰度判定
+
+## decision-mapping：当用户完全不知道从哪开始
+
+当用户的需求只有一句话甚至几个词（如"我想做一个系统"），不要强行进入三维盘问。此时用户需要的不是 PRD，而是**搞清楚自己到底要什么**。
+
+**流程**：
+
+1. 把模糊需求拆成 4-6 个**探索路径**，每条路径是一个可独立推进的调查任务：
+
+```
+探索路径 1：竞品调研 — 同类系统怎么做？有哪些成熟方案？
+探索路径 2：用户场景 — 谁会用它？一天中用几次？关键操作是什么？
+探索路径 3：技术可行性 — 核心技术难点在哪？有没有已知的坑？
+探索路径 4：最小可行版本 — 第一版只做一件什么事才算"能用"？
+探索路径 5（可选）：原型验证 — 哪个逻辑最不确定？写个终端原型跑一下
+探索路径 6（可选）：决策会议 — 汇总前 5 条，做出关键选型决定
+```
+
+2. 每条路径的输出是一个极短的总结（≤200 词），不做详细设计
+3. 所有路径走完后，汇总为一个"决策摘要"，此时用户的需求已经清晰，进入正常的三维盘问
+
+## prototype：当状态模型或业务逻辑存疑时
+
+当用户知道要做什么但不确定怎么做（"扣款逻辑应该是先锁再扣还是先查再冻？"），不写 PRD。写一个**丢弃式原型**。
+
+**Java 原型模板**：
+
+```java
+// PROTOYPE.java — 验证后删除，不进入正式代码
+import java.math.BigDecimal;
+import java.util.*;
+
+public class TransferPrototype {
+    // 纯逻辑：不连数据库、不连 Redis、不启动 Spring
+    static class Account {
+        String id;
+        BigDecimal balance;
+        BigDecimal frozen;  // 冻结金额
+    }
+
+    static enum TransferResult { SUCCESS, INSUFFICIENT, DUPLICATE }
+
+    // 被验证的核心逻辑：先冻结 → 扣款 → 解冻
+    static TransferResult transfer(Account from, Account to, BigDecimal amount) {
+        if (from.balance.compareTo(amount) < 0) return TransferResult.INSUFFICIENT;
+        from.balance = from.balance.subtract(amount);
+        from.frozen = from.frozen.add(amount);  // 冻结
+        to.balance = to.balance.add(amount);
+        from.frozen = from.frozen.subtract(amount);  // 解冻
+        return TransferResult.SUCCESS;
+    }
+
+    // 终端交互：用户手动输入，观察状态变化
+    public static void main(String[] args) {
+        Scanner sc = new Scanner(System.in);
+        Account a1 = new Account(); a1.id = "A1"; a1.balance = new BigDecimal("1000");
+        Account a2 = new Account(); a2.id = "A2"; a2.balance = new BigDecimal("500");
+        System.out.println("A1: " + a1.balance + " | A2: " + a2.balance);
+        System.out.print("转账金额: ");
+        BigDecimal amt = new BigDecimal(sc.nextLine());
+        TransferResult r = transfer(a1, a2, amt);
+        System.out.println("结果: " + r);
+        System.out.println("A1: " + a1.balance + " (冻结:" + a1.frozen + ") | A2: " + a2.balance);
+    }
+}
+```
+
+**运行验证**：
+
+```bash
+javac TransferPrototype.java && java TransferPrototype
+```
+
+**规则**：
+- 原型用纯 Java SE，不引入任何框架依赖
+- 用 `Scanner` + `System.out` 做终端交互
+- 用 `BigDecimal`、`record`、`enum` 建模领域逻辑
+- 验证通过后**立即删除**原型文件，不提交到 Git
+- 将验证结论写入 PRD 的"实现决策"中，标注"经原型验证"
+
+---
 
 ---
 

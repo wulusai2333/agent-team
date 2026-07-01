@@ -1,6 +1,51 @@
 # tdd-java 参考模板与检查表
 
-按需读取，不在技能启动时全部加载。
+按需读取。
+
+---
+
+# codebase-design：深模块设计检查
+
+在每个 TDD 循环中创建新类或新接口之前，强制执行此检查。拒绝"为了拆分而拆分"的浅模块。
+
+## 概念
+
+| 概念 | 定义 | Java 对应 |
+|---|---|---|
+| 深模块 | 接口极小，内部极复杂——一个方法背后藏着大量逻辑 | 一个好的 `@Service`：`void transfer(TransferRequest)`，内部做了幂等+锁+扣款+审计 |
+| 浅模块 | 接口复杂，内部极简单——一堆方法全是 getter/setter 或转发 | 一个 `XxxHelper` 类有 12 个方法，每个方法只有 2 行，全部转发给别的类 |
+
+## 深度检查（创建新类前）
+
+```
+这个新类：
+  1. 公开方法有几个？→ ≥5 个 → 可能太复杂，考虑拆
+  2. 是否大部分方法是转发/委托/简单 getter？→ 是 → 浅模块，拒绝创建，合并回调用方
+  3. 去掉这个类，逻辑内联回调用方，是否更清晰？→ 是 → 不创建
+  4. 这个类的接口是否隐藏了足够的内部复杂度？→ 是 → 深模块，允许创建
+```
+
+## 反模式
+
+| 反模式 | 例子 | 纠正 |
+|---|---|---|
+| Manager/Helper/Util 泛滥 | `TransferManager`, `TransferHelper`, `TransferUtil` 同时存在 | 合并成一个 `TransferService` |
+| 一步一接口 | `IAccountRepo` → `AccountRepoImpl` 只有 1:1 实现 | 只有多个实现时才需要接口 |
+| 微服务崇拜 | 一个简单的查询功能拆成 3 个微服务 | 用模块拆分，不用服务边界拆分 |
+| Spring Bean 碎片化 | 5 个 `@Service` 每个只有 1 个方法，互相注入 | 合并，减少 Bean 图复杂度 |
+
+## 深度优先 dep 分类（参考 DEEPENING.md）
+
+| 依赖类型 | 定义 | 测试策略 |
+|---|---|---|
+| 进程内（in-process） | 纯 Java 逻辑，不涉及 IO | 纯单元测试，毫秒级 |
+| 本地可替换（local-substitutable） | 涉及 IO 但可替换（H2 代替 PG） | 切片测试 |
+| 远端自有（remote-owned） | Feign 调自己的微服务 | `@MockBean` |
+| 外部系统（external） | 第三方 API、支付网关 | Mockito/WireMock |
+
+**重构策略**：把尽可能多的代码移到进程内层，减少远端依赖的代码量。
+
+---
 
 ---
 
@@ -92,7 +137,85 @@ docker info > /dev/null 2>&1 && echo "可用" || echo "不可用"
 
 ---
 
-# 核心闭环代码模板
+# diagnosing-bugs：6 阶段诊断循环
+
+当测试红灯不是"方法不存在"（那是正常 TDD 的红灯-1）而是**已有代码的预期行为被打破**时，自动切入此模式。
+
+## 阶段 A：复现
+
+- 收到 Bug 报告后的第一件事：写一个**精确复现 Bug 的失败测试**
+- 测试名用 `should_Reproduce_Bug_{Issue号}`，加 `@DisplayName` 描述
+- 如果无法复现 → 报告用户"当前代码无法复现此 Bug"，停止诊断
+
+## 阶段 B：缩小
+
+二分法定位故障点：
+
+```
+1. 整条链路是否全部挂？→ 是 → 检查公共依赖（连接池/配置中心/注册中心）
+2. 单个模块挂？→ 对比该模块的最近提交历史
+3. 单个方法挂？→ 检查该方法最近的修改
+4. 某行代码挂？→ 检查该行的前置条件是否被破坏
+```
+
+Spring Boot 缩小策略：
+- Controller 层 → `@WebMvcTest` 隔离测试
+- Service 层 → `@ExtendWith(MockitoExtension.class)` 纯单元测试
+- Repository 层 → `@DataJpaTest` 隔离测试
+- 跨服务调用 → `@MockBean` 逐个 Mock 剔除
+
+## 阶段 C：假设
+
+提出**不超过 3 个**可验证的根因假设。每个假设必须有对应的验证方法：
+
+```
+假设 1：[原因] → 验证：[写什么样的测试/日志来证明或推翻]
+假设 2：[原因] → 验证：[...]
+假设 3：[原因] → 验证：[...]
+```
+
+常见的 Java/Spring 根因类别：
+- 事务边界错误（`@Transactional` 没生效、自调用失效）
+- 线程安全问题（`@Service` 中可变状态、缓存并发）
+- 依赖版本冲突（依赖树上同一 JAR 有 2 个版本）
+- 配置污染（`application.yml` 被 Profile 覆盖）
+- Nacos 配置推送延迟 / 服务列表未刷新
+
+## 阶段 D：插桩
+
+添加临时诊断代码来验证假设。**插桩代码是不提交的**——用 `// FIXME: DIAGNOSTIC - remove after debugging` 标记：
+
+```java
+// 临时日志插桩
+log.warn("DIAGNOSTIC: transactionId={}, balance_before={}, lock_owner={}",
+    txId, before, lockOwner);
+
+// 临时 AOP 插桩（如需要）
+@Around("execution(* com.bank.transfer..*(..))")
+public Object profile(ProceedingJoinPoint pjp) throws Throwable {
+    long start = System.nanoTime();
+    Object result = pjp.proceed();
+    log.warn("DIAGNOSTIC: {} took {}ms", pjp.getSignature(), (System.nanoTime()-start)/1_000_000);
+    return result;
+}
+```
+
+## 阶段 E：修复 + 回归测试
+
+- 确认根因后，写最小修复代码
+- **保留复现 Bug 的那个测试**作为回归测试（改名 `should_{描述}_When_{条件}`）
+- 运行全量测试确认没有引入新问题
+
+## 阶段 F：清理 + 回顾
+
+- 删除所有 `DIAGNOSTIC` 标记的插桩代码
+- 问自己（Agent）："这个 Bug 应该在哪个更早的阶段被发现？"
+  - 如果 TDD 阶段能发现 → 补一个测试用例
+  - 如果 code review 能发现 → 在反模式清单里加一条
+  - 如果只有生产环境能发现 → 在 guardrails 里加一个检查
+- 提交修复，commit message 格式：`fix(模块): [Issue#N] {Bug简述}`
+
+---
 
 ## 步骤 2.1：写测试
 
