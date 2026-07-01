@@ -37,19 +37,25 @@ description: Java 工程护栏一次性安装程序。为项目生成 pre-commit
 
 # 模块 1：Pre-commit 本地熔断脚本
 
-## 1.1 生成 `.git/hooks/pre-commit`
+## 1.1 动静分离原则
+
+本地 pre-commit 只做**毫秒级静态检查**。全量单元测试（5-10 分钟）和 OWASP 安全扫描（下载 CVE 数据库需要 5 分钟）全部交给 GitHub Actions CI/CD 处理。
+
+**如果 pre-commit 里跑 `mvn clean test`，开发者会直接用 `--no-verify` 跳过护栏，护栏形同虚设。**
+
+## 1.2 生成 `.git/hooks/pre-commit`
 
 写入以下脚本并 `chmod +x`：
 
 ```bash
 #!/bin/sh
-echo "============ [工程护栏] 代码与安全合规性扫描 ============"
+echo "============ [工程护栏] 静态合规性扫描 ============"
 
-# 1. 编译与单元测试大闸
-echo "▷ 正在运行单元测试与编译检查..."
-mvn clean test
+# 1. 编译检查（不跑测试，只验证语法正确）
+echo "▷ 正在运行编译检查..."
+mvn compile -q
 if [ $? -ne 0 ]; then
-    echo "❌ [ERROR] 单元测试未通过或编译失败！拒绝提交。"
+    echo "❌ [ERROR] 编译失败！请修复编译错误后再提交。"
     exit 1
 fi
 
@@ -68,6 +74,14 @@ if grep -q "spring-boot-starter-parent" pom.xml 2>/dev/null; then
                 exit 1
             fi
             ;;
+        2.*)
+            # Boot 2.x：反向检测，禁止引入 jakarta.*（说明依赖了 Boot 3 的包）
+            if git diff --cached --name-only | xargs grep -l "import jakarta\." 2>/dev/null; then
+                echo "❌ [CRITICAL RISK] Spring Boot 2.x 项目检测到 jakarta.* 命名空间！"
+                echo "   Boot 2.x 使用 javax.* 命名空间。请检查是否误引入了 Boot 3.x 生态依赖。"
+                exit 1
+            fi
+            ;;
     esac
 fi
 
@@ -78,14 +92,33 @@ if [ ! -f "CONTEXT.md" ]; then
     exit 1
 fi
 
-echo "✅ [SUCCESS] 所有工程护栏通过，允许提交！"
+# 4. 高危依赖关键字扫描（快速静态匹配）
+if git diff --cached --name-only | xargs grep -lE "jedis[^a-z]" 2>/dev/null; then
+    echo "⚠️  [WARNING] 检测到 Jedis 使用。Spring Boot 默认使用 Lettuce，裸用 Jedis 不推荐。"
+    echo "   建议改用 Redisson 或 Lettuce。如确需使用 Jedis，请确认有充分理由。"
+fi
+
+echo "✅ [SUCCESS] 静态护栏通过，允许提交！"
+echo "   （全量单元测试和安全扫描将在 git push 后由 CI/CD 自动执行）"
 exit 0
 ```
 
-## 1.2 自动检测构建工具
+## 1.3 动静分离总结
+
+| 检查项 | 本地 pre-commit | CI/CD（GitHub Actions） |
+|---|---|---|
+| 编译语法检查 | ✅ `mvn compile -q`（秒级） | ✅ |
+| Jakarta 命名空间检测 | ✅ grep 扫描（毫秒级） | ✅ |
+| CONTEXT.md 存在检查 | ✅ 文件存在检测（毫秒级） | ✅ |
+| 高危依赖关键字扫描 | ✅ grep 扫描（毫秒级） | ✅ |
+| 全量单元测试 | ❌ 不在本地运行 | ✅ `mvn test` |
+| OWASP 安全扫描 | ❌ 不在本地运行 | ✅ |
+| Trivy 镜像扫描 | ❌ 不在本地运行 | ✅ |
+
+## 1.4 自动检测构建工具
 
 - 检测到 `pom.xml` → 使用 `mvn`
-- 检测到 `build.gradle` / `build.gradle.kts` → 替换 `mvn clean test` 为 `./gradlew test`
+- 检测到 `build.gradle` / `build.gradle.kts` → 替换 `mvn compile -q` 为 `./gradlew compileJava`
 - 如果同时存在，优先 Maven
 
 ## 1.3 兼容现有 Git Guardrails
@@ -455,10 +488,10 @@ spec:
 guardrails-java    → 安装护栏（一次性）
                         ↓
                   每次 git commit：
-                    pre-commit 熔断：编译不通过？javax.* 污染？缺文档？ → 拒绝
+                    pre-commit 熔断（秒级）：javax.* 污染？缺文档？编译语法错误？ → 拒绝
                         ↓
                   每次 git push：
-                    GitHub Actions：编译 → 测试 → OWASP 安全扫描 → 镜像构建 → Trivy 扫描
+                    GitHub Actions：编译 → 全量测试 → OWASP 安全扫描 → 镜像构建 → Trivy 扫描
                         ↓
                   全部通过 → 合并 → K8s 滚动部署
 ```

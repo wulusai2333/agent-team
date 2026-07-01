@@ -9,13 +9,41 @@ description: Java/Spring Boot TDD 研发一体机。从 Issue 到可提交代码
 
 ---
 
-# 启动前：读取上下文
+# 启动前：读取上下文 + 多模块检测
 
 按优先级读取，不存在的静默跳过：
 
 1. **`CONTEXT.md`** — 领域术语表，测试名和变量名必须对齐
 2. **`docs/adr/`** 中与本次改动相关的 ADR — 了解已有技术决策
 3. **Issue / PRD** — 本次要实现的验收标准（Acceptance Criteria）
+
+## 多模块项目检测
+
+在运行任何 `mvn` 命令前，先判断项目是否多模块：
+
+```bash
+grep -c '<module>' pom.xml
+```
+
+**如果是多模块项目**（`<modules>` 存在），后续所有 `mvn test` 命令必须加上 `-pl` 指定具体模块，禁止在根目录直接运行测试。
+
+**定位测试类所在的模块**：
+
+```bash
+find . -name "AccountServiceTest.java" -path "*/test/*"
+# 输出示例：./order-service/src/test/java/.../AccountServiceTest.java
+# 提取模块名：order-service
+```
+
+然后使用：
+
+```bash
+mvn test -pl :order-service -Dtest=AccountServiceTest
+```
+
+**为什么**：在根目录运行 `mvn test -Dtest=...` 会扫描所有子模块，即使 Maven 能找到对应的类，解析整个多模块生命周期的开销也会让单次红灯循环长达数十秒甚至数分钟。`-pl` 跳过所有无关模块，实现秒级反馈。
+
+**如果是单模块项目**，直接用 `mvn test -Dtest=...` 即可。
 
 ---
 
@@ -58,9 +86,23 @@ description: Java/Spring Boot TDD 研发一体机。从 Issue 到可提交代码
 | 注册中心（Nacos/Consul/Eureka） | 测试配置文件禁用（`spring.cloud.nacos.discovery.enabled=false`） |
 | 配置中心（Nacos Config/Apollo） | 使用 `application-test.yml` 本地配置 |
 | 消息队列（RocketMQ/RabbitMQ/Kafka） | `@MockBean` Mock Template/Listener |
-| Redis | 纯单元测用 Mock；集成测用 Testcontainers |
-| 数据库 | 纯单元测用 Mock；集成测用 Testcontainers 或 H2 |
+| Redis | 纯单元测用 Mock；集成测优先用内嵌 Redis（如 `embedded-redis`），仅验证 Lua 脚本等特定功能时才用 Testcontainers |
+| 数据库 | 纯单元测用 Mock；集成测优先用 H2/H2Dialect，仅验证 JSONB、全文检索、特定 SQL 方言时才用 Testcontainers |
 | 外部 HTTP API | `@MockBean` 或 WireMock |
+
+### Testcontainers 使用前置条件
+
+**不要直接假设 Testcontainers 可用。** 在使用前必须验证 Docker 守护进程：
+
+```bash
+docker info > /dev/null 2>&1 && echo "Docker 可用" || echo "Docker 不可用"
+```
+
+- **Docker 不可用** → 自动回退到 H2/内嵌方案，报告用户："Docker 不可用，已自动回退到 H2 数据库进行集成测试。"
+- **Docker 可用但镜像拉取失败**（国内网络环境常见）→ 在 `application-test.yml` 中配置镜像加速或预先拉取镜像
+- **只有验证以下特定场景时才用 Testcontainers**：PostgreSQL JSONB 操作、自定义 SQL 方言、Redis Lua 脚本、或 PRD 明确要求用真实中间件验证
+
+**核心原则**：Agent 不能因为基础设施问题（Docker 没装、镜像拉不下来）而误以为自己的业务代码写错了。
 
 ### Mock 速查
 
@@ -146,6 +188,11 @@ class AccountServiceTest {
 ### 2.2 运行测试，迎接红灯-1
 
 ```bash
+# 多模块项目（先定位模块）
+MODULE=$(find . -name "AccountServiceTest.java" -path "*/test/*" | head -1 | sed 's|.*/\([^/]*\)/src/test/.*|\1|')
+mvn test -pl :$MODULE -Dtest=AccountServiceTest
+
+# 单模块项目
 mvn test -Dtest=AccountServiceTest
 ```
 
@@ -243,14 +290,17 @@ class UserControllerTest {
 
 # 构建命令速查
 
-| 场景 | Maven | Gradle |
-|---|---|---|
-| 全量编译 | `mvn compile` | `./gradlew compileJava` |
-| 运行单个测试类 | `mvn test -Dtest=UserServiceTest` | `./gradlew test --tests UserServiceTest` |
-| 运行全量测试 | `mvn test` | `./gradlew test` |
-| 打包（跳过测试） | `mvn package -DskipTests` | `./gradlew build -x test` |
+| 场景 | Maven（单模块） | Maven（多模块） | Gradle |
+|---|---|---|---|
+| 全量编译 | `mvn compile` | `mvn compile` | `./gradlew compileJava` |
+| 运行单个测试类 | `mvn test -Dtest=UserServiceTest` | `mvn test -pl :模块名 -Dtest=UserServiceTest` | `./gradlew test --tests UserServiceTest` |
+| 运行全量测试 | `mvn test` | `mvn test`（在 CI 中运行） | `./gradlew test` |
+| 打包（跳过测试） | `mvn package -DskipTests` | `mvn package -DskipTests` | `./gradlew build -x test` |
+| 定位测试类所在模块 | — | `find . -name "测试类名.java" -path "*/test/*"` | — |
 
 **自动检测**：检测到 `pom.xml` 优先用 Maven，检测到 `build.gradle` / `build.gradle.kts` 用 Gradle。
+
+**多模块检测**：读取 `pom.xml` 中是否有 `<modules>` 标签。有则启用多模块命令策略，本地 TDD 循环只用 `-pl`，全量测试留给 CI。
 
 ---
 
@@ -284,6 +334,6 @@ class UserControllerTest {
 
 所有接缝测试通过后：
 
-1. 运行全量测试：`mvn test`（或 `./gradlew test`）
+1. 运行全量测试（多模块用 `mvn test`，单模块同上；Gradle 用 `./gradlew test`）
 2. 确认全部绿色
 3. 使用 `/code-review` 评审本次改动
