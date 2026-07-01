@@ -9,6 +9,43 @@ description: Java/Spring Boot 双轴代码评审。Standards（编码规范 + Sp
 
 ---
 
+# 断点续传规则
+
+被中断后重新唤醒时：
+
+```
+1. git log -1 --oneline → 确认上次评审的基准点
+2. 如果子 Agent 结果已写入临时文件 → 读取并直接进入聚合阶段
+3. 如果子 Agent 未完成 → 重新发起并行评审
+```
+
+> "恢复会话。上次评审基准点：{commit}。Standards 子Agent {已完成/未完成}，Spec 子Agent {已完成/未完成}。继续聚合报告。"
+
+---
+
+# 交互约束
+
+| 步骤 | 汇报模板 |
+|---|---|
+| 固定点确认 | `评审基准点：{commit/branch}。Diff 包含 {N} 个文件，{M} 次提交。` |
+| Spec 源定位 | `Spec 来源：{Issue/PRD 路径}。`（或：`未找到 Spec 源，Spec 轴跳过。`） |
+| 子 Agent 并行启动 | `Standards 和 Spec 子评审并行启动中...` |
+| 聚合完成 | `双轴评审完成。Standards 发现 {N} 项，Spec 发现 {M} 项。` |
+
+---
+
+# 完成后交接
+
+评审报告呈现后，明确指引用户下一步：
+
+> 评审完成。下一步：
+> 1. 根据 Standards 报告修复编码规范问题
+> 2. 根据 Spec 报告补全遗漏的验收标准
+> 3. 修复后重新运行 `/code-review-java` 确认
+> 4. 全部通过后推送并创建 PR
+
+---
+
 ## 双轴模型
 
 - **Standards** — 代码是否符合本项目的编码规范 + Spring 分层约定 + Fowler 坏味道基线？

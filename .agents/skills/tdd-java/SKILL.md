@@ -9,6 +9,32 @@ description: Java/Spring Boot TDD 研发一体机。从 Issue 到可提交代码
 
 ---
 
+# 断点续传规则
+
+被中断后重新唤醒时，**不要从头开始**。先扫描当前状态：
+
+```
+1. 当前分支？→ git branch --show-current
+2. 有没有未提交的更改？→ git status --short
+3. 目标 Issue 是什么？→ 从最近的 commit message 中提取 Issue 号
+4. 已有测试文件？→ find src/test -name "*Test.java" | head -10
+5. 上次测试结果？→ 运行最近修改的测试类，确认当前状态
+```
+
+向用户汇报：
+
+> "恢复会话。当前分支：{branch}。上次工作在 Issue #{N}。检测到 {N} 个已有测试文件，{M} 个未提交更改。继续从 {上次停下的接缝} 开始。"
+
+**跨平台命令适配**：
+
+| Linux/macOS | Windows PowerShell | 用途 |
+|---|---|---|
+| `find . -name "XxxTest.java" -path "*/test/*"` | `Get-ChildItem -Recurse -Filter "XxxTest.java" \| Where-Object {$_.FullName -like '*\test\*'}` | 定位测试类 |
+| `sed 's\|.*/\([^/]*\)/src/test.*\|\1\|'` | 用 `ForEach-Object` 解析路径 | 提取模块名 |
+| `docker info > /dev/null 2>&1` | `docker info 2>&1 \| Out-Null; $?` | Docker 探测 |
+
+---
+
 # 启动前：读取上下文 + 多模块检测
 
 按优先级读取，不存在的静默跳过：
@@ -103,6 +129,30 @@ docker info > /dev/null 2>&1 && echo "Docker 可用" || echo "Docker 不可用"
 - **只有验证以下特定场景时才用 Testcontainers**：PostgreSQL JSONB 操作、自定义 SQL 方言、Redis Lua 脚本、或 PRD 明确要求用真实中间件验证
 
 **核心原则**：Agent 不能因为基础设施问题（Docker 没装、镜像拉不下来）而误以为自己的业务代码写错了。
+
+### 数据隔离规范（防止污染本地数据库）
+
+集成测试涉及数据库时，**严禁对本地物理数据库持久化脏数据**。必须使用：
+
+**首选方案：`@Transactional + @Rollback`**
+
+```java
+@SpringBootTest
+@Transactional
+@Rollback
+class AccountServiceIntegrationTest {
+    // 每个测试方法执行后自动回滚，不留痕迹
+}
+```
+
+**备选方案：H2/内嵌数据库**
+
+当 `@SpringBootTest` 太重或只需验证 Repository 层时，使用 `@DataJpaTest`（默认使用内嵌 H2）。
+
+**禁止行为**：
+- ❌ 测试中直接连接开发环境的 PostgreSQL/Redis
+- ❌ 测试中使用 `TRUNCATE TABLE` 而非回滚
+- ❌ 多个人/多个 Agent 共用同一个数据库实例跑测试
 
 ### Mock 速查
 

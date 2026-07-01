@@ -19,6 +19,70 @@ description: Java 工程护栏一次性安装程序。为项目生成 pre-commit
 
 ---
 
+# 断点续传规则
+
+被中断后重新唤醒时，**不要从头重新生成所有配置**。先扫描：
+
+```
+1. .git/hooks/pre-commit 已存在？→ 跳过模块 1
+2. pom.xml 中已有 org.owasp:dependency-check-maven？→ 跳过模块 2
+3. 已有 springdoc-openapi 依赖？→ 跳过模块 3
+4. Dockerfile 已存在？→ 跳过模块 4.1
+5. docker-compose-env.yml 已存在？→ 跳过模块 4.2
+6. .github/workflows/ci.yml 已存在？→ 跳过模块 5
+7. k8s/ 目录已存在？→ 跳过模块 6
+8. logstash/pipeline/ 已存在？→ 跳过模块 7
+```
+
+向用户汇报：
+
+> "检测到已有 {N} 个模块。将跳过已有配置，仅安装缺失的 {M} 个模块：{列表}。确认继续？"
+
+---
+
+# 反模式警告（DevOps/安全）
+
+| 反模式 | 表现 | 纠正 |
+|---|---|---|
+| **pre-commit 跑全量测试** | 每次 commit 等 5-10 分钟 | 本地只做静态扫描，全量测试放 CI |
+| **硬编码密钥** | `application.yml` 里写明文密码 | 用 K8s Secrets 或环境变量注入 |
+| **镜像用 latest 标签** | 生产部署使用 `image:latest` | 使用 `git sha` 或语义版本号 |
+| **忽略健康检查** | Deployment 没有 liveness/readiness | 必须配置 Spring Boot Actuator 探活 |
+| **无资源限制** | K8s Pod 无 requests/limits | 必须设置，防止 OOM 驱逐 |
+
+---
+
+# 回退策略
+
+| 场景 | 退化行为 |
+|---|---|
+| `mvn` 不可用 | pre-commit 和 CI 改用 `./gradlew`，两者都不可用时跳过编译检查 |
+| Docker 不可用 | 跳过 Dockerfile、docker-compose-env.yml 生成。报告用户"容器化模块已跳过" |
+| `gh` CLI 不可用 | CI 生成仍继续（GitHub Actions 在远端执行），本地 CI 验证步骤跳过 |
+| 已有同名的 pre-commit 钩子 | 备份到 `.git/hooks/pre-commit.bak`，提示用户合并 |
+| 项目不是 Spring Boot | 跳过 Springdoc OpenAPI 模块 |
+| Windows 环境 | 额外生成 `pre-commit.ps1`，提示用户手动复制到 `.git/hooks/` |
+
+---
+
+# 完成后交接
+
+安装完成后输出：
+
+```
+护栏安装完成。已激活：
+
+  本地：.git/hooks/pre-commit（静态红线）
+  远端：.github/workflows/ci.yml（全量测试 + 安全扫描 + 镜像扫描）
+
+下一步：
+  1. git add .git/hooks/ .github/ && git commit -m "chore: 安装工程护栏"
+  2. 正常运行 /tdd-java 开始开发
+  3. 每次 git push 后，在 GitHub Actions 页面查看 CI 结果
+```
+
+---
+
 # 工作流总览
 
 ```
@@ -103,7 +167,51 @@ echo "   （全量单元测试和安全扫描将在 git push 后由 CI/CD 自动
 exit 0
 ```
 
-## 1.3 动静分离总结
+## 1.3 Windows PowerShell 版本（pre-commit.ps1）
+
+检测到宿主机为 Windows 时，额外生成 `.git/hooks/pre-commit.ps1`：
+
+```powershell
+Write-Host "============ [工程护栏] 本地代码静态合规性扫描 ============"
+
+# 1. Jakarta 命名空间污染检测（Spring Boot 3 核心大闸）
+$bootVersion = Select-String -Path "pom.xml" -Pattern "<version>(.*)</version>" | Select-Object -First 1
+if ($bootVersion -match "3\..*") {
+    $stagedFiles = git diff --cached --name-only
+    foreach ($file in $stagedFiles) {
+        $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
+        if ($content -match "import javax\.(servlet|annotation|persistence)") {
+            Write-Host "❌ [CRITICAL RISK] Spring Boot 3.x 项目检测到 javax.* 命名空间！"
+            Write-Host "   请替换为 jakarta.* 对应包。"
+            exit 1
+        }
+    }
+}
+
+# 2. 核心文档追溯检查
+if (-not (Test-Path "CONTEXT.md")) {
+    Write-Host "❌ [ERROR] 项目缺少核心上下文文件 CONTEXT.md！"
+    Write-Host "   请运行 /plan-java 初始化项目上下文。"
+    exit 1
+}
+
+# 3. 高危依赖关键字扫描
+foreach ($file in $stagedFiles) {
+    $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
+    if ($content -match "jedis[^a-z]") {
+        Write-Host "⚠️  [WARNING] 检测到 Jedis 使用。建议改用 Redisson 或 Lettuce。"
+    }
+}
+
+Write-Host "✅ [SUCCESS] 静态护栏通过。全量测试和安全扫描将在 git push 后由 CI 执行。"
+exit 0
+```
+
+**跨平台安装逻辑**：
+- Linux/macOS → 生成 `.git/hooks/pre-commit`（Bash），`chmod +x`
+- Windows → 额外生成 `.git/hooks/pre-commit.ps1`（PowerShell），提示用户 Git for Windows 支持 `.ps1` 钩子
+
+## 1.4 动静分离总结
 
 | 检查项 | 本地 pre-commit | CI/CD（GitHub Actions） |
 |---|---|---|
