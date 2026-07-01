@@ -466,6 +466,228 @@ spec:
 
 ---
 
+# 模块 7：ELK 日志栈配置（按需）
+
+如果项目涉及 ELK（如银行转账系统需要全链路日志追踪），生成以下配置。
+
+## 7.1 Logstash Pipeline 配置
+
+在项目 `logstash/pipeline/transfer-log.conf` 中生成：
+
+```ruby
+# Logstash pipeline：解析 Spring Boot JSON 日志
+input {
+  beats {
+    port => 5044
+  }
+}
+
+filter {
+  # 解析 JSON 格式的日志
+  json {
+    source => "message"
+    target => "log"
+  }
+
+  # 提取关键字段
+  if [log][transactionId] {
+    mutate {
+      add_field => {
+        "transaction_id" => "%{[log][transactionId]}"
+        "trace_id" => "%{[log][traceId]}"
+        "step" => "%{[log][step]}"
+        "duration_ms" => "%{[log][duration_ms]}"
+      }
+    }
+  }
+
+  # 标记错误日志
+  if [log][level] == "ERROR" {
+    mutate {
+      add_tag => ["error", "pagerduty"]
+    }
+  }
+
+  # 金融交易日志必须有 transactionId
+  if [log][logger_name] =~ /com\.bank\.transfer/ and ![log][transactionId] {
+    mutate {
+      add_tag => ["missing_transaction_id"]
+    }
+  }
+}
+
+output {
+  elasticsearch {
+    hosts => ["elasticsearch:9200"]
+    index => "transfer-logs-%{+YYYY.MM.dd}"
+    template => "/usr/share/logstash/config/transfer-template.json"
+    template_name => "transfer-logs"
+    template_overwrite => true
+  }
+}
+```
+
+## 7.2 Elasticsearch 索引模板
+
+在项目 `logstash/config/transfer-template.json` 中生成：
+
+```json
+{
+  "index_patterns": ["transfer-logs-*"],
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "refresh_interval": "5s"
+  },
+  "mappings": {
+    "properties": {
+      "transaction_id": { "type": "keyword" },
+      "trace_id": { "type": "keyword" },
+      "step": { "type": "keyword" },
+      "duration_ms": { "type": "integer" },
+      "level": { "type": "keyword" },
+      "logger_name": { "type": "keyword" },
+      "message": { "type": "text" },
+      "@timestamp": { "type": "date" },
+      "tags": { "type": "keyword" }
+    }
+  }
+}
+```
+
+## 7.3 Spring Boot 应用日志配置
+
+在 `src/main/resources/logback-spring.xml` 中生成 JSON 格式日志配置：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>transactionId</includeMdcKeyName>
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <fieldNames>
+                <timestamp>@timestamp</timestamp>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>
+```
+
+**依赖**（在 pom.xml 中添加）：
+
+```xml
+<dependency>
+    <groupId>net.logstash.logback</groupId>
+    <artifactId>logstash-logback-encoder</artifactId>
+    <version>7.4</version>
+</dependency>
+```
+
+## 7.4 Filebeat K8s DaemonSet
+
+在 `k8s/filebeat-daemonset.yaml` 中生成，Filebeat 作为 DaemonSet 在每个节点采集所有 Pod 日志：
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: filebeat
+  template:
+    metadata:
+      labels:
+        app: filebeat
+    spec:
+      serviceAccountName: filebeat
+      containers:
+        - name: filebeat
+          image: docker.elastic.co/beats/filebeat:8.13.4
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+          env:
+            - name: LOGSTASH_HOSTS
+              value: "logstash-service:5044"
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat
+subjects:
+  - kind: ServiceAccount
+    name: filebeat
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: filebeat
+  apiGroup: rbac.authorization.k8s.io
+```
+
+## 7.5 Kibana 常用查询（运维手册）
+
+生成 `docs/elk-queries.md`，供运维在 Kibana 中使用：
+
+```markdown
+# ELK 运维查询手册
+
+## 按交易流水号追踪全链路
+
+在 Kibana Discover 中输入：
+transaction_id: "TXN-20260702-001"
+
+## 查看所有错误日志
+
+tags: "error" AND logger_name: "com.bank.transfer.*"
+
+## 查看缺少交易流水号的日志（违规）
+
+tags: "missing_transaction_id"
+
+## 查看某时间段某步骤的耗时分布
+
+step: "扣款" AND duration_ms: > 1000
+
+## 死信相关查询
+
+step: "死信" AND @timestamp: [now-24h TO now]
+```
+
+---
+
 # 交互约束
 
 | 步骤 | 模板 |
