@@ -46,7 +46,28 @@ description: 元 Agent 团队架构师。通过四轮无死角盘问，理解任
 
 # 生成规则
 
-盘问完成后，生成以下 6 个文件。每个文件必须是可以直接写入 `.agents/skills/<name>/SKILL.md` 的完整内容，无占位符。
+盘问完成后，生成以下文件。**每个技能必须拆成两个文件：SKILL.md（核心规则，≤100 行）和 REFERENCE.md（模板仓库，按需加载）。**
+
+## 双文件模式
+
+此模式解决"每次调用加载所有模板导致 Token 浪费"的问题。
+
+```
+SKILL.md（启动时加载，≤100 行）
+  ├── 角色定义（3-5 行）
+  ├── 断点续传规则
+  ├── 核心流程摘要（每步 2-3 行 + @REFERENCE.md 指针）
+  ├── 交互约束
+  └── 完成后交接
+
+REFERENCE.md（按需加载）
+  ├── 完整模板（ADR/PRD/Issue/代码示例）
+  ├── 检查表（版本矩阵/反模式清单/Mock 策略表）
+  ├── 脚本（pre-commit/CI YAML/Dockerfile）
+  └── 回退策略
+```
+
+**规则**：SKILL.md 中每个步骤只写流程摘要和 `@REFERENCE.md#section` 指针。Agent 在执行到该步骤时才读取 REFERENCE.md 对应章节。不准把模板塞回 SKILL.md。
 
 ## 1. CLAUDE.md 片断
 
@@ -158,19 +179,24 @@ description: 元 Agent 团队架构师。通过四轮无死角盘问，理解任
 
 ### 📁 生成的 Agent 团队资产清单
 
-| 文件路径 | 适用角色 | 核心机制 | 行数 |
+| 文件路径 | 加载时机 | 核心机制 | 估算 tokens |
 |---|---|---|---|
-| `CLAUDE.md` 片断 | 环境大闸 + 自愈指南 | 步骤 0 环境熔断、构建自愈命令、跨平台处理 | N |
-| `.agents/skills/plan-{tech}/SKILL.md` | 需求与架构师 | 增量版本校验、垂直切片发布、Agent 唤醒指令 | N |
-| `.agents/skills/tdd-{tech}/SKILL.md` | TDD 研发一体机 | 编译期红灯、多模块寻址、数据隔离 | N |
-| `.agents/skills/review-{tech}/SKILL.md` | 双轴代码评审 | 双轴并行、框架反模式、合规检查 | N |
-| `.agents/skills/guardrails-{tech}/SKILL.md` | 工程护栏 | 静态 pre-commit、CI/CD 编排、安全扫描 | N |
-| `.agents/skills/install-agent-team/SKILL.md` | 安装程序 | 一键复制 | N |
+| `CLAUDE.md` 片断 | 会话启动 | 步骤 0 环境熔断、构建自愈、跨平台 | ~2,500 |
+| `.agents/skills/plan-{tech}/SKILL.md` | 每次调用 | 核心流程摘要 + @REFERENCE 指针 | ~1,500 |
+| `.agents/skills/plan-{tech}/REFERENCE.md` | 按需 | 版本矩阵、ADR/PRD/Issue 模板、反模式 | ~3,000 |
+| `.agents/skills/tdd-{tech}/SKILL.md` | 每次调用 | 核心闭环摘要 + @REFERENCE 指针 | ~1,500 |
+| `.agents/skills/tdd-{tech}/REFERENCE.md` | 按需 | 测试模板、Mock 表、构建命令速查 | ~2,500 |
+| `.agents/skills/review-{tech}/SKILL.md` | 每次调用 | 双轴模型 + 流程摘要 | ~1,000 |
+| `.agents/skills/review-{tech}/REFERENCE.md` | 按需 | 反模式清单、Fowler 基线、子Agent 提示词 | ~2,000 |
+| `.agents/skills/guardrails-{tech}/SKILL.md` | 每次调用 | 模块清单 + @REFERENCE 指针 | ~1,200 |
+| `.agents/skills/guardrails-{tech}/REFERENCE.md` | 按需 | pre-commit 脚本、CI YAML、Dockerfile、K8s 清单 | ~4,500 |
 
 **🎉 属于你技术栈的专属 AI 研发流水线已成功孵化！**
 
+Token 优化效果：每次调用仅加载 SKILL.md（~6,000 tokens 总和），而非全部 ~18,000 tokens。模板仅在生成时按需读取。
+
 下一步：
-1. 将 CLAUDE.md 片断追加（或创建）到目标项目根目录的 `CLAUDE.md`
-2. 将技能文件复制到 `.agents/skills/` 目录
-3. 运行 `/guardrails-{tech}` 安装 pre-commit 警报器 + CI/CD
-4. 运行 `/plan-{tech}` 开始你的第一个需求
+1. 将 CLAUDE.md 片断追加到目标项目的 `CLAUDE.md`
+2. 将 SKILL.md + REFERENCE.md 复制到 `.agents/skills/` 目录（每个技能一个子目录）
+3. 运行 `/guardrails-{tech}` 安装护栏
+4. 运行 `/plan-{tech}` 开始第一个需求
